@@ -240,12 +240,22 @@ m4.metric("Incidencias del módulo", len(incidencias))
 
 if ev["discrepancias_reales"]:
     st.markdown("**Discrepancias calculadas por el evaluador**")
+
+    def estado(d):
+        if d in c["detectadas"]:
+            return "Sí"
+        if d in c["con_error"]:
+            return "Con valores erróneos"
+        return "No"
+
     st.table(pd.DataFrame([{
         "Campo": d["etiqueta"], "Cliente": d["valor_cliente"],
         "Orden de fabricación": d["valor_orden"],
         "Severidad esperada": d["severidad_esperada"].capitalize(),
-        "Detectada por el módulo": "Sí" if d in c["detectadas"] else "No",
+        "Detectada por el módulo": estado(d),
     } for d in ev["discrepancias_reales"]]))
+    st.caption("Señalar el campo correcto no basta: si la incidencia cita valores que "
+               "contradicen los documentos, la discrepancia no cuenta como detectada.")
 else:
     st.success("Los documentos concuerdan en todos los campos comparables: "
                "no había ninguna discrepancia que detectar.")
@@ -253,11 +263,14 @@ else:
 if c["omitidas"]:
     st.error("Discrepancias existentes que el módulo no reportó: "
              + ", ".join(d["etiqueta"] for d in c["omitidas"]))
+if c["con_error"]:
+    st.error("Discrepancias señaladas con valores que contradicen los documentos: "
+             + ", ".join(d["etiqueta"] for d in c["con_error"]))
 if c["falsas"]:
     st.error("Incidencias emitidas que no se sostienen en los documentos: "
              + ", ".join(E.ETIQUETAS.get(i["campo"], i["campo"]) for i in c["falsas"]))
 if ev["mal_citados"]:
-    st.warning("Incidencias cuyos valores citados no coinciden con los documentos: "
+    st.warning("Detalle de los valores mal citados: "
                + "; ".join(f"{v['etiqueta']} cita {v['citado']} y los documentos dicen {v['real']}"
                            for v in ev["mal_citados"]))
 
