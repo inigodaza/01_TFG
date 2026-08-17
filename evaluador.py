@@ -226,19 +226,54 @@ def campos_comparables(orden, cliente):
 # 5. Contraste con la salida del módulo
 # ===========================================================================
 
-def contrastar(incidencias, reales):
+def valores_correctos(incidencias, reales):
+    """Comprueba si los valores que cita el módulo coinciden con los documentos."""
+    ref = {d["campo"]: d for d in reales}
+    out = []
+    for i in incidencias:
+        d = ref.get(i.get("campo"))
+        if not d:
+            continue
+        vc, vo = i.get("valor_cliente"), i.get("valor_orden")
+        ok = ((vc is None or str(numero(vc) or vc) == str(d["valor_cliente"])) and
+              (vo is None or str(numero(vo) or vo) == str(d["valor_orden"])))
+        out.append({"campo": i["campo"], "etiqueta": d["etiqueta"], "correcto": ok,
+                    "citado": f"{vc} / {vo}",
+                    "real": f"{d['valor_cliente']} / {d['valor_orden']}"})
+    return out
+
+
+def contrastar(incidencias, reales, valores=None):
+    """
+    Empareja lo que reportó el módulo con lo que el evaluador calculó.
+
+    Señalar el campo correcto no basta: si la incidencia cita valores que
+    contradicen los documentos, la discrepancia no se ha detectado bien y no
+    computa como acierto. Un aviso con los datos equivocados no es información
+    utilizable aguas abajo.
+    """
+    valores = valores if valores is not None else valores_correctos(incidencias, reales)
+    mal_citados = {v["campo"] for v in valores if not v["correcto"]}
+
     reportados = {i.get("campo") for i in incidencias}
     esperados = {d["campo"] for d in reales}
 
-    detectadas = [d for d in reales if d["campo"] in reportados]
+    detectadas = [d for d in reales
+                  if d["campo"] in reportados and d["campo"] not in mal_citados]
+    con_error = [d for d in reales if d["campo"] in mal_citados]
     omitidas = [d for d in reales if d["campo"] not in reportados]
     falsas = [i for i in incidencias if i.get("campo") not in esperados]
+
     n = len(incidencias)
+    # Una incidencia con valores erróneos no se sostiene documentalmente,
+    # igual que una sin respaldo: ambas restan precisión.
+    sostenidas = n - len(falsas) - len(mal_citados)
 
     return {
-        "detectadas": detectadas, "omitidas": omitidas, "falsas": falsas,
+        "detectadas": detectadas, "con_error": con_error,
+        "omitidas": omitidas, "falsas": falsas,
         "exhaustividad": round(100 * len(detectadas) / len(reales), 1) if reales else None,
-        "precision": round(100 * (n - len(falsas)) / n, 1) if n else None,
+        "precision": round(100 * sostenidas / n, 1) if n else None,
     }
 
 
@@ -437,19 +472,23 @@ def evaluar(orden, cliente, incidencias, nombre_orden="la orden de fabricación"
     """
     reales = discrepancias_reales(orden, cliente)
     internas = incoherencias_internas(orden)
-    contraste = contrastar(incidencias, reales)
-    sev = severidades(incidencias, reales)
     val = valores_correctos(incidencias, reales)
+    contraste = contrastar(incidencias, reales, val)
+    sev = severidades(incidencias, reales)
     comparables = campos_comparables(orden, cliente)
+    mal_citados = [v for v in val if not v["correcto"]]
     casos = {}
 
     # 1 — discrepancias de severidad alta
     duras = [d for d in reales if d["severidad_esperada"] == "alta"]
     det = [d for d in contraste["detectadas"] if d["severidad_esperada"] == "alta"]
     omit = [d["etiqueta"] for d in contraste["omitidas"] if d["severidad_esperada"] == "alta"]
+    err = [d["etiqueta"] for d in contraste["con_error"] if d["severidad_esperada"] == "alta"]
     casos[1] = _r(bool(duras) and len(det) == len(duras),
-                  f"{len(det)} de {len(duras)} detectadas."
-                  + (f" Omitidas: {', '.join(omit)}." if omit else ""),
+                  f"{len(det)} de {len(duras)} detectadas correctamente."
+                  + (f" Omitidas: {', '.join(omit)}." if omit else "")
+                  + (f" Señaladas con valores que contradicen los documentos: "
+                     f"{', '.join(err)}." if err else ""),
                   omitir=not duras)
 
     # 2 — graduación de severidad
@@ -460,12 +499,20 @@ def evaluar(orden, cliente, incidencias, nombre_orden="la orden de fabricación"
                             for s in sev) or "Sin severidades comparables.",
                   omitir=not sev)
 
-    # 3 — precisión
-    casos[3] = _r(not contraste["falsas"],
+    # 3 — precisión: ni incidencias inventadas ni valores erróneos
+    problemas = []
+    if contraste["falsas"]:
+        problemas.append("sin respaldo documental: "
+                         + ", ".join(ETIQUETAS.get(i.get("campo"), str(i.get("campo")))
+                                     for i in contraste["falsas"]))
+    if mal_citados:
+        problemas.append("con valores que no coinciden con los documentos: "
+                         + "; ".join(f"{v['etiqueta']} cita {v['citado']} frente a {v['real']}"
+                                     for v in mal_citados))
+    casos[3] = _r(not problemas,
                   f"Precisión {contraste['precision']}%. "
-                  + (f"Sin respaldo documental: "
-                     f"{', '.join(ETIQUETAS.get(i.get('campo'), str(i.get('campo'))) for i in contraste['falsas'])}."
-                     if contraste["falsas"] else "Todas las incidencias se sostienen en los documentos."),
+                  + ("Incidencias " + "; ".join(problemas) + "." if problemas
+                     else "Todas las incidencias se sostienen en los documentos."),
                   omitir=not incidencias)
 
     # 4 — repetibilidad: requiere una segunda ejecución
@@ -530,9 +577,6 @@ def evaluar(orden, cliente, incidencias, nombre_orden="la orden de fabricación"
     casos[10] = _r(False, "Requiere auditar la misma contradicción en el flujo de pedido y en el de chat.",
                    omitir=True)
 
-    # --- valores mal citados: no altera el resultado de ningún caso, pero se informa
-    mal_citados = [v for v in val if not v["correcto"]]
-
     return {"campos_orden": orden, "campos_cliente": cliente,
             "discrepancias_reales": reales, "incoherencias_internas": internas,
             "contraste": contraste, "severidades": sev, "valores": val,
@@ -559,15 +603,15 @@ ASPECTOS = {
         "Comparar el documento consigo mismo antes de contrastarlo con fuentes externas. "
         "Un error de transcripción aislado en un campo de cabecera es detectable sin salir "
         "del fichero."),
-    1: ("Se omiten discrepancias existentes entre los documentos",
-        "Revisar la extracción de los campos omitidos: el evaluador los localiza en ambos "
+    1: ("Hay discrepancias existentes que no se detectan correctamente",
+        "Revisar la extracción de los campos afectados: el evaluador los localiza en ambos "
         "documentos, luego la información estaba disponible."),
     2: ("La severidad asignada no corresponde a la esperada",
         "Fijar la clasificación de severidad por regla explícita en lugar de delegarla al "
         "modelo generativo."),
-    3: ("Se emiten incidencias sin respaldo documental",
-        "Exigir que toda incidencia cite los dos valores en conflicto y su localización "
-        "antes de emitirse."),
+    3: ("Se emiten incidencias sin respaldo documental o con valores erróneos",
+        "Exigir que toda incidencia cite los dos valores en conflicto tal como figuran en "
+        "los documentos, y verificar la cita antes de emitirla."),
     6: ("Hay incidencias que no citan sus documentos de origen",
         "Hacer obligatoria la referencia a ambos documentos en cada incidencia emitida."),
     7: ("La dirección de la corrección no es la esperada",
@@ -649,6 +693,10 @@ def a_markdown(er, ev):
          f"| Pendientes de datos | {r['pendiente']} |",
          f"| Exhaustividad | {c['exhaustividad']}% |",
          f"| Precisión | {c['precision']}% |", "",
+         "*Exhaustividad: de las discrepancias existentes en los documentos, cuántas "
+         "detectó correctamente el módulo. Precisión: de las incidencias que emitió, "
+         "cuántas se sostienen documentalmente. Una incidencia que señala el campo "
+         "correcto pero cita valores erróneos no computa en ninguna de las dos.*", "",
          "## Valoración", "", er["valoracion"], ""]
 
     if ev["discrepancias_reales"]:
@@ -656,7 +704,8 @@ def a_markdown(er, ev):
               "| Campo | Cliente | Orden de fabricación | Severidad esperada | Detectada |",
               "|---|---|---|---|---|"]
         for d in ev["discrepancias_reales"]:
-            det = "Sí" if d in c["detectadas"] else "No"
+            det = ("Sí" if d in c["detectadas"]
+                   else "Con valores erróneos" if d in c["con_error"] else "No")
             L.append(f"| {d['etiqueta']} | {d['valor_cliente']} | {d['valor_orden']} | "
                      f"{d['severidad_esperada']} | {det} |")
         L.append("")
