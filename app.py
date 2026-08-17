@@ -113,64 +113,104 @@ if not comparables:
 # ===========================================================================
 # Paso 2 — Salida del módulo
 # ===========================================================================
-st.header("2 · Salida del módulo de Juan")
-st.write("Introduce las incidencias que reportó el módulo para este pedido, "
-         "tal como aparecen en su interfaz. Una fila por incidencia.")
+st.header("2 · Respuesta del módulo de Juan")
+st.write("Pega la respuesta tal como aparece en la interfaz de GraphyCems, con sus "
+         "encabezados de severidad. El evaluador la interpreta y te muestra qué ha "
+         "entendido antes de puntuar.")
 
-if "filas" not in st.session_state:
-    st.session_state.filas = pd.DataFrame([{
-        "Campo": "Cantidad", "Valor según cliente": "", "Valor según orden": "",
-        "Severidad": "Alta", "Cita ambos documentos": True,
-        "Documento a corregir": "Orden de fabricación", "Señala incoherencia interna": False,
-    }])
+EJEMPLO_42805 = """INCONGRUENCIA (1)
+El pedido del cliente (Beliefs in Our World 2nd Edition Skills Book 9780717195473.pdf) indica 3.000 unidades, pero la orden de fabricación (of42805.pdf) indica 30.000.
+of42805.pdf   Beliefs in Our World 2nd Edition Skills Book 9780717195473.pdf
 
-c1, c2 = st.columns([1, 3])
-if c1.button("Cargar la salida del pedido 42805"):
-    st.session_state.filas = pd.DataFrame([
-        {"Campo": "Cantidad", "Valor según cliente": "3.000", "Valor según orden": "30.000",
-         "Severidad": "Alta", "Cita ambos documentos": True,
-         "Documento a corregir": "Orden de fabricación", "Señala incoherencia interna": False},
-        {"Campo": "Gramaje de cubierta", "Valor según cliente": "240", "Valor según orden": "250",
-         "Severidad": "Menor", "Cita ambos documentos": True,
-         "Documento a corregir": "Orden de fabricación", "Señala incoherencia interna": False},
-    ])
-c2.caption("Atajo para la demostración: carga las dos incidencias que el módulo "
-           "emitió sobre el pedido 42805.")
+A REVISAR (1)
+El gramaje de cubierta en el pedido del cliente (Beliefs in Our World 2nd Edition Skills Book 9780717195473.pdf) es 240g, pero la orden de fabricación (of42805.pdf) indica 250g. A revisar: podría ser el redondeo estándar de GraphyCems, no necesariamente un error.
+of42805.pdf   Beliefs in Our World 2nd Edition Skills Book 9780717195473.pdf"""
 
-editadas = st.data_editor(
-    st.session_state.filas, num_rows="dynamic", use_container_width=True, hide_index=True,
-    column_config={
-        "Campo": st.column_config.SelectboxColumn(options=OPCIONES_CAMPO, required=True),
-        "Valor según cliente": st.column_config.TextColumn(
-            help="Valor que el módulo atribuye al documento de cliente. Opcional."),
-        "Valor según orden": st.column_config.TextColumn(
-            help="Valor que el módulo atribuye a la orden de fabricación. Opcional."),
-        "Severidad": st.column_config.SelectboxColumn(options=["Alta", "Menor"], required=True),
-        "Cita ambos documentos": st.column_config.CheckboxColumn(
-            help="¿La incidencia referencia el documento de origen y el de destino?"),
-        "Documento a corregir": st.column_config.SelectboxColumn(options=OPCIONES_CORREGIR),
-        "Señala incoherencia interna": st.column_config.CheckboxColumn(
-            help="¿La incidencia advierte de que la orden se contradice a sí misma?"),
-    },
+if "respuesta" not in st.session_state:
+    st.session_state.respuesta = ""
+
+b1, b2 = st.columns([1, 3])
+if b1.button("Pegar la respuesta del 42805"):
+    st.session_state.respuesta = EJEMPLO_42805
+b2.caption("Atajo para la demostración: carga la respuesta que el módulo emitió "
+           "sobre el pedido 42805.")
+
+respuesta = st.text_area(
+    "Respuesta del módulo",
+    key="respuesta", height=220,
+    placeholder="INCONGRUENCIA (1)\nEl pedido del cliente (...) indica 3.000 unidades, "
+                "pero la orden de fabricación (...) indica 30.000.\n\nA REVISAR (1)\n...",
+    help="Si el módulo no reportó nada, escribe su mensaje de ausencia de incidencias "
+         "o deja el campo vacío: el evaluador comprobará si esa ausencia era correcta.",
 )
 
-st.caption("Si el módulo no reportó ninguna incidencia, deja la tabla vacía: "
-           "el evaluador comprobará si esa ausencia era correcta.")
+incidencias, avisos_lectura = E.interpretar(respuesta)
 
-incidencias = []
-for _, f in editadas.iterrows():
-    campo = CAMPO_POR_ETIQUETA.get(str(f["Campo"]))
-    if not campo:
-        continue
-    incidencias.append({
-        "campo": campo,
-        "valor_cliente": (str(f["Valor según cliente"]).strip() or None),
-        "valor_orden": (str(f["Valor según orden"]).strip() or None),
-        "severidad": "alta" if str(f["Severidad"]) == "Alta" else "menor",
-        "cita_documentos": bool(f["Cita ambos documentos"]),
-        "corregir": MAPA_CORREGIR.get(str(f["Documento a corregir"])),
-        "interna": bool(f["Señala incoherencia interna"]),
-    })
+for a in avisos_lectura:
+    st.warning(a)
+
+st.markdown("**Interpretación de la respuesta**")
+if incidencias:
+    st.caption("Revisa que coincide con lo que dice el módulo. Puedes corregir cualquier "
+               "celda antes de evaluar.")
+    base = pd.DataFrame([{
+        "Campo": E.ETIQUETAS.get(i["campo"], i["campo"]),
+        "Valor según cliente": i["valor_cliente"] or "",
+        "Valor según orden": i["valor_orden"] or "",
+        "Severidad": "Alta" if i["severidad"] == "alta" else "Menor",
+        "Cita ambos documentos": i["cita_documentos"],
+        "Documento a corregir": {"orden": "Orden de fabricación",
+                                 "cliente": "Pedido de cliente"}.get(i["corregir"], "No lo declara"),
+        "Señala incoherencia interna": i["interna"],
+    } for i in incidencias])
+
+    editadas = st.data_editor(
+        base, num_rows="dynamic", use_container_width=True, hide_index=True,
+        key="revision",
+        column_config={
+            "Campo": st.column_config.SelectboxColumn(options=OPCIONES_CAMPO, required=True),
+            "Severidad": st.column_config.SelectboxColumn(options=["Alta", "Menor"], required=True),
+            "Cita ambos documentos": st.column_config.CheckboxColumn(
+                help="¿La incidencia referencia el documento de origen y el de destino?"),
+            "Documento a corregir": st.column_config.SelectboxColumn(options=OPCIONES_CORREGIR),
+            "Señala incoherencia interna": st.column_config.CheckboxColumn(
+                help="¿Advierte de que la orden se contradice a sí misma?"),
+        },
+    )
+
+    incidencias = []
+    for _, f in editadas.iterrows():
+        campo = CAMPO_POR_ETIQUETA.get(str(f["Campo"]))
+        if not campo:
+            continue
+        incidencias.append({
+            "campo": campo,
+            "valor_cliente": (str(f["Valor según cliente"]).strip() or None),
+            "valor_orden": (str(f["Valor según orden"]).strip() or None),
+            "severidad": "alta" if str(f["Severidad"]) == "Alta" else "menor",
+            "cita_documentos": bool(f["Cita ambos documentos"]),
+            "corregir": MAPA_CORREGIR.get(str(f["Documento a corregir"])),
+            "interna": bool(f["Señala incoherencia interna"]),
+        })
+elif respuesta.strip():
+    st.info("No se ha reconocido ninguna incidencia en la respuesta. Si el módulo "
+            "efectivamente no reportó nada, continúa: el evaluador comprobará si esa "
+            "ausencia era correcta.")
+else:
+    st.info("Sin respuesta introducida. Si continúas, se evaluará como ausencia de incidencias.")
+
+with st.expander("Cómo se interpreta la respuesta"):
+    st.markdown(
+        "La lectura es determinista: reconoce los encabezados de severidad "
+        "(`INCONGRUENCIA`, `A REVISAR`), identifica el campo por las expresiones que "
+        "emplea el módulo, separa los dos valores en conflicto por la conjunción "
+        "adversativa y atribuye cada uno a su documento según cuál se mencione en cada "
+        "lado.\n\n"
+        "Cubre la forma en que el módulo redacta hoy. Para formulaciones arbitrarias, "
+        "aquí es donde encajaría una llamada a un modelo de lenguaje, sustituyendo el "
+        "intérprete sin alterar el resto del evaluador: lo que se juzga son las "
+        "incidencias ya interpretadas, no el texto."
+    )
 
 # ===========================================================================
 # Paso 3 — Evaluación
@@ -278,4 +318,4 @@ e1.download_button("EvaluationResult (Markdown)",
                    file_name=f"evaluationresult_{pedido}.md", mime="text/markdown")
 e2.download_button("Resultado caso a caso (CSV)",
                    df.to_csv(index=False).encode("utf-8-sig"),
-                   file_name=f"casos_{pedido}.csv", mime="text/csv")
+                   file_name=f"casos_{pedido}.csv", mime="text/csv")sos_{pedido}.csv", mime="text/csv")
