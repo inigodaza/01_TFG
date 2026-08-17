@@ -268,6 +268,146 @@ def valores_correctos(incidencias, reales):
 
 
 # ===========================================================================
+# 5. Interpretación de la respuesta del módulo
+# ===========================================================================
+
+# Reglas de lectura de la respuesta en lenguaje natural. Es un intérprete
+# determinista: reconoce la forma en que el módulo redacta hoy sus incidencias.
+# Cuando haya que cubrir formulaciones arbitrarias, este es el punto donde
+# encaja una llamada a un modelo de lenguaje, sustituyendo interpretar() sin
+# tocar nada más del evaluador.
+
+PISTAS_CAMPO = [
+    ("gramaje_cubierta", r"gramaje\s+de\s+(la\s+)?cubierta|cubierta.{0,30}gramaje|gramaje.{0,20}cubierta"),
+    ("gramaje_interior", r"gramaje\s+de\s+(l\s*)?interior|papel\s+de\s+interior|interior.{0,20}gramaje"),
+    ("cantidad",         r"\bunidades\b|\bcantidad\b|\btirada\b|\bejemplares\b|\bcopias\b"),
+    ("paginas",          r"\bp[áa]ginas\b|\bpp\b|\bextent\b"),
+    ("isbn",             r"\bisbn\b"),
+    ("formato",          r"\bformato\b|\btama[ñn]o\b|\bmedidas\b"),
+]
+
+SIN_INCIDENCIAS = r"no\s+se\s+han?\s+(encontrado|detectado)|sin\s+incongruencias|ninguna\s+incidencia|todo\s+(es\s+)?correcto|no\s+hay\s+(incongruencias|discrepancias)"
+
+
+def _campo_de(texto):
+    t = texto.lower()
+    for campo, patron in PISTAS_CAMPO:      # el orden importa: lo específico primero
+        if re.search(patron, t):
+            return campo
+    return None
+
+
+def _severidad_de(cabecera, cuerpo):
+    t = (cabecera + " " + cuerpo).lower()
+    if re.search(r"a\s+revisar|revisar:|posible|podr[íi]a\s+ser|no\s+necesariamente", t):
+        return "menor"
+    if re.search(r"incongruencia|discrepancia|error|incoherencia", t):
+        return "alta"
+    return None
+
+
+def _bloques(texto):
+    """
+    Parte la respuesta en incidencias. Reconoce dos formas: encabezados de
+    severidad seguidos de párrafos, y listas de párrafos sin encabezado.
+    """
+    lineas = [l.rstrip() for l in texto.splitlines()]
+    bloques, cabecera, actual = [], "", []
+
+    def cerrar():
+        cuerpo = " ".join(x.strip() for x in actual if x.strip())
+        if len(cuerpo) > 25:                       # descarta restos de interfaz
+            bloques.append((cabecera, cuerpo))
+
+    for linea in lineas:
+        desnuda = linea.strip()
+        if re.match(r"^\s*(INCONGRUENCIA|A\s+REVISAR|INCOHERENCIA|AVISO|ERROR)S?\b",
+                    desnuda, re.IGNORECASE):
+            cerrar()
+            cabecera, actual = desnuda, []
+            continue
+        if not desnuda:                            # línea en blanco separa incidencias
+            if actual:
+                cerrar()
+                actual = []
+            continue
+        actual.append(desnuda)
+    cerrar()
+    return bloques
+
+
+def interpretar(texto):
+    """
+    Convierte la respuesta del módulo, tal como aparece en su interfaz, en la
+    lista de incidencias que consume el evaluador.
+
+    Devuelve (incidencias, avisos). Los avisos recogen lo que no ha podido
+    interpretarse, para que quede a la vista y pueda corregirse a mano.
+    """
+    texto = (texto or "").strip()
+    if not texto:
+        return [], []
+    if re.search(SIN_INCIDENCIAS, texto, re.IGNORECASE) and len(texto) < 200:
+        return [], []
+
+    incidencias, avisos = [], []
+    for cabecera, cuerpo in _bloques(texto):
+        campo = _campo_de(cuerpo)
+        if not campo:
+            avisos.append(f"No se ha identificado el campo en: «{cuerpo[:80]}…»")
+            continue
+
+        # El módulo redacta "el cliente indica X, pero la orden indica Y".
+        # La conjunción separa el valor de origen del valor discrepante.
+        partes = re.split(r"\bpero\b|\bmientras que\b|\bfrente a\b", cuerpo, maxsplit=1)
+        izq, der = (partes[0], partes[1]) if len(partes) == 2 else (cuerpo, "")
+
+        def primer_numero(fragmento):
+            # Se descartan los números pegados a un nombre de fichero (ISBN del título)
+            limpio = re.sub(r"\S+\.pdf", " ", fragmento, flags=re.IGNORECASE)
+            m = re.search(r"(?:indica|es|de|señala|pone|figura|consta)\s+([\d.,]+)", limpio)
+            if not m:
+                m = re.search(r"\b([\d.,]{2,})\b", limpio)
+            if not m:
+                return None
+            return m.group(1).rstrip(".,;:")        # la puntuación de la frase no es parte del valor
+
+        v_izq, v_der = primer_numero(izq), primer_numero(der)
+
+        # Quién es quién: el fragmento que menciona la orden aporta el valor de la orden
+        menciona_orden = lambda s: bool(re.search(r"orden\s+de\s+fabricaci[óo]n|\bof\d*\.pdf|\bOF\b", s, re.IGNORECASE))
+        if menciona_orden(der) or not menciona_orden(izq):
+            valor_cliente, valor_orden = v_izq, v_der
+            corregir = "orden"
+        else:
+            valor_cliente, valor_orden = v_der, v_izq
+            corregir = "cliente"
+
+        ficheros = {f.strip().lower() for f in re.findall(r"[\w\s\-–—()]+?\.pdf", cuerpo)}
+        severidad = _severidad_de(cabecera, cuerpo)
+        if severidad is None:
+            severidad = "alta"
+            avisos.append(f"Severidad no declarada en la incidencia de "
+                          f"{ETIQUETAS.get(campo, campo)}; se asume alta.")
+
+        # Incoherencia interna: ambos valores atribuidos al mismo documento.
+        # En ese caso la dirección de la corrección no aplica: no hay dos
+        # documentos entre los que elegir cuál es la fuente de verdad.
+        interna = bool(re.search(r"cabecera|logística|log[íi]stica|internamente|"
+                                 r"el propio documento|dentro del mismo", cuerpo, re.IGNORECASE))
+        if interna:
+            corregir = None
+
+        incidencias.append({
+            "campo": campo, "valor_cliente": valor_cliente, "valor_orden": valor_orden,
+            "severidad": severidad, "cita_documentos": len(ficheros) >= 2,
+            "corregir": corregir, "interna": interna, "texto": cuerpo,
+        })
+
+    return incidencias, avisos
+
+
+# ===========================================================================
 # 6. Batería: resultado por caso
 # ===========================================================================
 
@@ -344,13 +484,19 @@ def evaluar(orden, cliente, incidencias, nombre_orden="la orden de fabricación"
                          if internas else "Sin incoherencias internas en el documento.")))
 
     # 6 — trazabilidad
+    # Una incidencia interna afecta a un solo documento: exigirle dos referencias
+    # sería un requisito imposible de cumplir.
+    exigibles = [i for i in incidencias if not i.get("interna")]
     sin_fuente = [ETIQUETAS.get(i.get("campo"), str(i.get("campo")))
-                  for i in incidencias if not i.get("cita_documentos")]
+                  for i in exigibles if not i.get("cita_documentos")]
     casos[6] = _r(not sin_fuente,
-                  f"{len(incidencias) - len(sin_fuente)} de {len(incidencias)} incidencias "
+                  f"{len(exigibles) - len(sin_fuente)} de {len(exigibles)} incidencias "
                   f"citan sus dos documentos."
-                  + (f" Sin respaldo: {', '.join(sin_fuente)}." if sin_fuente else ""),
-                  omitir=not incidencias)
+                  + (f" Sin respaldo: {', '.join(sin_fuente)}." if sin_fuente else "")
+                  + (f" {len(incidencias) - len(exigibles)} incidencia(s) interna(s) "
+                     f"exentas por afectar a un solo documento."
+                     if len(exigibles) < len(incidencias) else ""),
+                  omitir=not exigibles)
 
     # 7 — dirección de la corrección
     declaradas = [i for i in incidencias if i.get("corregir")]
@@ -542,4 +688,4 @@ def a_markdown(er, ev):
           "*Cada aspecto a mejorar queda anclado al caso de la batería que lo evidencia. "
           "Los casos pendientes describen comprobaciones diseñadas y no ejecutadas: no "
           "computan a favor ni en contra del módulo evaluado.*"]
-    return "\n".join(L)
+    return "\n".join(L).join(L)
