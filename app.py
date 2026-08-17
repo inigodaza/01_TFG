@@ -318,4 +318,4 @@ e1.download_button("EvaluationResult (Markdown)",
                    file_name=f"evaluationresult_{pedido}.md", mime="text/markdown")
 e2.download_button("Resultado caso a caso (CSV)",
                    df.to_csv(index=False).encode("utf-8-sig"),
-                   file_name=f"casos_{pedido}.csv", mime="text/csv")sos_{pedido}.csv", mime="text/csv")
+                   file_name=f"casos_{pedido}.csv", mime="text/csv")
