@@ -19,9 +19,10 @@ De ahí salen las dos magnitudes del veredicto:
 1. **Documentos del pedido.** Se suben los PDF. Cada documento se clasifica por su
    contenido, no por el nombre del fichero: orden de fabricación, pedido de cliente
    o presupuesto. Un PDF sin capa de texto se detecta y se advierte.
-2. **Salida del módulo.** Se introducen las incidencias que reportó el módulo, una
-   por fila. El botón *Cargar la salida del pedido 42805* rellena las dos incidencias
-   reales de ese pedido.
+2. **Respuesta del módulo.** Se pega la respuesta tal como aparece en la interfaz de
+   GraphyCems, con sus encabezados de severidad. El evaluador la interpreta y muestra
+   qué ha entendido en una tabla revisable, corregible celda a celda antes de puntuar.
+   El botón *Pegar la respuesta del 42805* carga la respuesta real de ese pedido.
 3. **Evaluación.** Se emite el contraste independiente, el resultado caso a caso y
    el `EvaluationResult` con valoración y aspectos a mejorar, exportable a Markdown.
 
@@ -45,8 +46,20 @@ De ahí salen las dos magnitudes del veredicto:
   Por ejemplo, la cobertura de campos sólo puede evaluarse si existe una discrepancia
   real en un campo distinto de los ya probados.
 
+## Interpretación de la respuesta
+
+La lectura es determinista: reconoce los encabezados de severidad, identifica el campo
+por las expresiones que emplea el módulo, separa los dos valores en conflicto por la
+conjunción adversativa y atribuye cada uno a su documento según cuál se mencione en
+cada lado. Lo que no consigue interpretar se declara como aviso y queda corregible.
+
+Esto cubre la forma en que el módulo redacta hoy. Para formulaciones arbitrarias, la
+función `interpretar()` de `evaluador.py` es el punto donde encaja una llamada a un
+modelo de lenguaje: sustituyéndola, el resto del evaluador no cambia, porque lo que
+se juzga son las incidencias ya interpretadas y no el texto.
+
 ## Limitación vigente
 
-Las incidencias del módulo se introducen a mano porque su salida sólo está disponible
-como interfaz renderizada. Todo lo demás es automático. Cuando el módulo exponga su
-respuesta estructurada, ese paso desaparece y la cadena funciona sin intervención.
+La respuesta del módulo se copia a mano porque sólo está disponible como interfaz
+renderizada. Todo lo demás es automático. Cuando el módulo exponga su respuesta
+estructurada, ese paso desaparece y la cadena funciona sin intervención.
