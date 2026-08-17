@@ -18,7 +18,7 @@ from pathlib import Path
 
 # Se incrementa cuando cambia el contrato con app.py, para que la interfaz pueda
 # avisar si los dos ficheros no se han actualizado a la vez.
-VERSION = 3
+VERSION = 4
 
 # ===========================================================================
 # 1. Lectura de PDF
@@ -375,6 +375,17 @@ def _bloques(texto):
     return bloques
 
 
+def recuento_declarado(texto):
+    """
+    Suma los recuentos que el propio módulo declara en sus encabezados,
+    del tipo «INCONGRUENCIA (1)». Devuelve None si no declara ninguno.
+    """
+    n = [int(m) for m in re.findall(
+        r"(?:INCONGRUENCIA|A\s+REVISAR|INCOHERENCIA|AVISO|ERROR)S?\s*\((\d+)\)",
+        texto or "", re.IGNORECASE)]
+    return sum(n) if n else None
+
+
 def interpretar(texto):
     """
     Convierte la respuesta del módulo, tal como aparece en su interfaz, en la
@@ -451,16 +462,15 @@ def interpretar(texto):
 # ===========================================================================
 
 CASOS = {
-    1:  "Detección de discrepancias de severidad alta",
-    2:  "Graduación de la severidad",
-    3:  "Ausencia de incidencias sin respaldo documental",
-    4:  "Repetibilidad del veredicto",
-    5:  "Coherencia interna del documento auditado",
-    6:  "Trazabilidad de la evidencia",
-    7:  "Dirección de la corrección",
-    8:  "Cobertura de campos del módulo",
-    9:  "Distinción entre ausencia de incidencias e imposibilidad de comprobar",
-    10: "Alcance del motor según el flujo",
+    1: "Detección de discrepancias de severidad alta",
+    2: "Graduación de la severidad",
+    3: "Ausencia de incidencias sin respaldo documental",
+    4: "Completitud del recuento declarado",
+    5: "Trazabilidad de la evidencia",
+    6: "Dirección de la corrección",
+    7: "Repetibilidad del veredicto",
+    8: "Cobertura de campos del módulo",
+    9: "Distinción entre ausencia de incidencias e imposibilidad de comprobar",
 }
 
 
@@ -469,10 +479,14 @@ def _r(ok, detalle, omitir=False):
             "observacion": detalle}
 
 
-def evaluar(orden, cliente, incidencias, nombre_orden="la orden de fabricación"):
+def evaluar(orden, cliente, incidencias, texto_respuesta=None, repeticion=None):
     """
     Ejecuta la batería sobre un pedido. Todos los resultados se calculan a partir
     de los documentos; ninguno se lee de un fichero de resultados previo.
+
+    texto_respuesta permite comprobar el recuento que el módulo declara.
+    repeticion es la lista de incidencias de una segunda ejecución, para medir
+    la repetibilidad del veredicto.
     """
     reales = discrepancias_reales(orden, cliente)
     internas = incoherencias_internas(orden)
@@ -519,45 +533,59 @@ def evaluar(orden, cliente, incidencias, nombre_orden="la orden de fabricación"
                      else "Todas las incidencias se sostienen en los documentos."),
                   omitir=not incidencias)
 
-    # 4 — repetibilidad: requiere una segunda ejecución
-    casos[4] = _r(False, "Requiere una segunda ejecución del módulo sobre el mismo pedido.",
-                  omitir=True)
+    # 4 — completitud del recuento declarado
+    # El módulo anuncia cuántas incidencias emite en sus encabezados. Si el
+    # anuncio no coincide con lo emitido, algo se ha quedado por el camino.
+    declarado = recuento_declarado(texto_respuesta) if texto_respuesta else None
+    casos[4] = _r(declarado == len(incidencias),
+                  f"El módulo declara {declarado} incidencia(s) y emite {len(incidencias)}."
+                  if declarado is not None else
+                  "La respuesta no declara ningún recuento en sus encabezados.",
+                  omitir=declarado is None)
 
-    # 5 — coherencia interna
-    señaladas = any(i.get("interna") for i in incidencias)
-    casos[5] = _r(not internas or señaladas,
-                  (f"El evaluador detecta {len(internas)} incoherencia(s) interna(s): "
-                   + "; ".join(f"cabecera {i['valor_cabecera']} frente a {i['valor_respaldo']} "
-                               f"en {i['donde']}" for i in internas)
-                   + ". El módulo no las señala."
-                   if internas and not señaladas
-                   else ("Incoherencia interna detectada también por el módulo."
-                         if internas else "Sin incoherencias internas en el documento.")))
-
-    # 6 — trazabilidad
-    # Una incidencia interna afecta a un solo documento: exigirle dos referencias
-    # sería un requisito imposible de cumplir.
-    exigibles = [i for i in incidencias if not i.get("interna")]
+    # 5 — trazabilidad
     sin_fuente = [ETIQUETAS.get(i.get("campo"), str(i.get("campo")))
-                  for i in exigibles if not i.get("cita_documentos")]
-    casos[6] = _r(not sin_fuente,
-                  f"{len(exigibles) - len(sin_fuente)} de {len(exigibles)} incidencias "
+                  for i in incidencias if not i.get("cita_documentos")]
+    casos[5] = _r(not sin_fuente,
+                  f"{len(incidencias) - len(sin_fuente)} de {len(incidencias)} incidencias "
                   f"citan sus dos documentos."
-                  + (f" Sin respaldo: {', '.join(sin_fuente)}." if sin_fuente else "")
-                  + (f" {len(incidencias) - len(exigibles)} incidencia(s) interna(s) "
-                     f"exentas por afectar a un solo documento."
-                     if len(exigibles) < len(incidencias) else ""),
-                  omitir=not exigibles)
+                  + (f" Sin respaldo: {', '.join(sin_fuente)}." if sin_fuente else ""),
+                  omitir=not incidencias)
 
-    # 7 — dirección de la corrección
+    # 6 — dirección de la corrección
+    # El documento de cliente es fuente de verdad por definición; la orden de
+    # fabricación es la transcripción, y por tanto el documento a corregir.
     declaradas = [i for i in incidencias if i.get("corregir")]
-    mal = [ETIQUETAS.get(i["campo"], i["campo"]) for i in declaradas
-           if i["corregir"] != "orden"]
-    casos[7] = _r(not mal,
-                  f"La corrección apunta a {nombre_orden} en todas las incidencias."
-                  if not mal else
-                  f"La corrección no apunta a la orden de fabricación en: {', '.join(mal)}.",
+    mal_dirigidas = [ETIQUETAS.get(i["campo"], i["campo"]) for i in declaradas
+                     if i["corregir"] != "orden"]
+    casos[6] = _r(not mal_dirigidas,
+                  "La corrección apunta a la orden de fabricación en todas las incidencias."
+                  if not mal_dirigidas else
+                  f"La corrección no apunta a la orden de fabricación en: "
+                  f"{', '.join(mal_dirigidas)}.",
                   omitir=not declaradas)
+
+    # 7 — repetibilidad del veredicto
+    # Sólo se comparan campos y severidad: la redacción puede variar sin que el
+    # veredicto cambie, y es el veredicto lo que se evalúa.
+    if repeticion is None:
+        casos[7] = _r(False, "Requiere pegar una segunda ejecución del módulo sobre "
+                             "el mismo pedido.", omitir=True)
+    else:
+        firma = lambda lista: sorted((i["campo"], i["severidad"]) for i in lista)
+        f1, f2 = firma(incidencias), firma(repeticion)
+        if f1 == f2:
+            detalle = (f"Las dos ejecuciones coinciden en los {len(f1)} campo(s) señalado(s) "
+                       f"y en su severidad.")
+        else:
+            solo1 = [ETIQUETAS.get(c, c) for c, s in f1 if (c, s) not in f2]
+            solo2 = [ETIQUETAS.get(c, c) for c, s in f2 if (c, s) not in f1]
+            detalle = "El veredicto varía entre ejecuciones."
+            if solo1:
+                detalle += f" Sólo en la primera: {', '.join(solo1)}."
+            if solo2:
+                detalle += f" Sólo en la segunda: {', '.join(solo2)}."
+        casos[7] = _r(f1 == f2, detalle)
 
     # 8 — cobertura de campos del módulo
     # Sólo es juzgable si existe discrepancia real en un campo distinto de los ya
@@ -575,16 +603,38 @@ def evaluar(orden, cliente, incidencias, nombre_orden="la orden de fabricación"
                    f"con error introducido en uno de ellos."),
                   omitir=not otros)
 
-    # 9 y 10 — requieren pedidos que no están disponibles
-    casos[9] = _r(False, "Requiere un pedido sin documento de cliente o con PDF sin capa de texto.",
-                  omitir=True)
-    casos[10] = _r(False, "Requiere auditar la misma contradicción en el flujo de pedido y en el de chat.",
-                   omitir=True)
+    # 9 — ausencia frente a imposibilidad de comprobar
+    casos[9] = _r(False, "Requiere un pedido sin documento de cliente o con PDF sin "
+                         "capa de texto.", omitir=True)
+
+    # --- Hallazgos de cobertura
+    # Comprobaciones que el módulo no realiza y que el evaluador sí. No puntúan:
+    # no hacer algo no es hacerlo mal. Se informan porque el evaluador demuestra
+    # que había algo que encontrar.
+    hallazgos = []
+    if internas:
+        hallazgos.append({
+            "titulo": "La orden de fabricación se contradice a sí misma",
+            "detalle": ("El evaluador detecta " + str(len(internas)) + " incoherencia(s) "
+                        "interna(s): " + "; ".join(
+                            f"la cabecera indica {i['valor_cabecera']} frente a "
+                            f"{i['valor_respaldo']} en el {i['donde']}" for i in internas)
+                        + ". El módulo contrasta la orden únicamente contra los documentos "
+                          "de cliente, luego no puede detectarlo."),
+            "porque_importa": ("El contraste externo revela que dos documentos no coinciden; "
+                               "el contraste interno revela cuál de los dos valores es el "
+                               "correcto, porque el cálculo productivo de la propia orden ya "
+                               "está hecho sobre él. Además seguiría funcionando aunque "
+                               "faltase el documento de cliente."),
+        })
 
     return {"campos_orden": orden, "campos_cliente": cliente,
             "discrepancias_reales": reales, "incoherencias_internas": internas,
             "contraste": contraste, "severidades": sev, "valores": val,
-            "mal_citados": mal_citados, "comparables": comparables, "casos": casos}
+            "mal_citados": mal_citados, "comparables": comparables,
+            "hallazgos": hallazgos, "casos": casos}
+
+
 
 
 # ===========================================================================
@@ -603,25 +653,25 @@ def resumen(casos):
 
 
 ASPECTOS = {
-    5: ("No se verifica la coherencia interna del documento auditado",
-        "Comparar el documento consigo mismo antes de contrastarlo con fuentes externas. "
-        "Un error de transcripción aislado en un campo de cabecera es detectable sin salir "
-        "del fichero."),
     1: ("Hay discrepancias existentes que no se detectan correctamente",
         "Revisar la extracción de los campos afectados: el evaluador los localiza en ambos "
         "documentos, luego la información estaba disponible."),
-    2: ("La severidad asignada no corresponde a la esperada",
-        "Fijar la clasificación de severidad por regla explícita en lugar de delegarla al "
-        "modelo generativo."),
     3: ("Se emiten incidencias sin respaldo documental o con valores erróneos",
         "Exigir que toda incidencia cite los dos valores en conflicto tal como figuran en "
         "los documentos, y verificar la cita antes de emitirla."),
-    6: ("Hay incidencias que no citan sus documentos de origen",
-        "Hacer obligatoria la referencia a ambos documentos en cada incidencia emitida."),
-    7: ("La dirección de la corrección no es la esperada",
+    2: ("La severidad asignada no corresponde a la esperada",
+        "Fijar la clasificación de severidad por regla explícita en lugar de delegarla al "
+        "modelo generativo."),
+    4: ("El recuento declarado no coincide con las incidencias emitidas",
+        "Derivar el recuento de los encabezados de la lista de incidencias en lugar de "
+        "calcularlo por separado."),
+    5: ("Hay incidencias que no citan sus documentos de origen",
+        "Hacer obligatoria la referencia a ambos documentos en cada incidencia emitida: sin "
+        "ella, la validación humana recibe una afirmación que no puede verificar."),
+    6: ("La dirección de la corrección no es la esperada",
         "Declarar explícitamente que el documento de cliente es la fuente de verdad y la "
         "orden de fabricación el documento a corregir."),
-    4: ("El determinismo del veredicto no está demostrado",
+    7: ("El determinismo del veredicto no está demostrado",
         "Ejecutar la auditoría dos veces sobre el mismo pedido sin modificar los documentos "
         "y comparar campos y severidad, no la redacción."),
     8: ("La cobertura de campos del módulo no está acotada",
@@ -630,9 +680,6 @@ ASPECTOS = {
     9: ("No consta distinción entre ausencia de incidencias e imposibilidad de comprobar",
         "Diferenciar ambas situaciones en la salida: una salida vacía por documento ilegible "
         "llegaría a validación humana como señal de pedido correcto."),
-    10: ("El alcance declarado de cada flujo no está verificado",
-         "Comprobar que el flujo de pedido se limita a los documentos de ese pedido y el de "
-         "chat abarca toda la base documental."),
 }
 
 ETIQUETA_CASO = {"no_pasa": "caso fallido", "pendiente": "caso pendiente",
@@ -662,7 +709,13 @@ def evaluation_result(ev, pedido, fecha=None):
                     f"con evidencia directa. ")
         if r["pendiente"]:
             val += (f"{'Queda un caso' if r['pendiente'] == 1 else 'Quedan ' + str(r['pendiente']) + ' casos'} "
-                    f"sin ejecutar por falta de datos, cuyo resultado no se presume en ningún sentido.")
+                    f"sin ejecutar por falta de datos, cuyo resultado no se presume en ningún sentido. ")
+        n_h = len(ev.get("hallazgos", []))
+        if n_h:
+            val += (f"Con independencia de la batería, se {'registra' if n_h == 1 else 'registran'} "
+                    f"{n_h} hallazgo{'' if n_h == 1 else 's'} de cobertura: comprobaciones que el "
+                    f"módulo no contempla y para las que el evaluador demuestra que había algo "
+                    f"que encontrar.")
 
     orden = {"no_pasa": 0, "pendiente": 1, "pasa": 2}
     aspectos = []
@@ -714,13 +767,19 @@ def a_markdown(er, ev):
                      f"{d['severidad_esperada']} | {det} |")
         L.append("")
 
-    if ev["incoherencias_internas"]:
-        L += ["## Incoherencias internas de la orden de fabricación", "",
-              "| Campo | Cabecera | Valor de respaldo | Procedencia |", "|---|---|---|---|"]
-        for i in ev["incoherencias_internas"]:
-            L.append(f"| {i['etiqueta']} | {i['valor_cabecera']} | {i['valor_respaldo']} | "
-                     f"{i['donde']} |")
-        L.append("")
+    if ev.get("hallazgos"):
+        L += ["## Hallazgos de cobertura", "",
+              "*Comprobaciones que el módulo no realiza y que el evaluador sí. No puntúan en "
+              "la batería: no realizar una comprobación no equivale a realizarla mal.*", ""]
+        for h in ev["hallazgos"]:
+            L += [f"### {h['titulo']}", "", h["detalle"], "",
+                  f"**Por qué importa:** {h['porque_importa']}", ""]
+        if ev["incoherencias_internas"]:
+            L += ["| Campo | Cabecera | Valor de respaldo | Procedencia |", "|---|---|---|---|"]
+            for i in ev["incoherencias_internas"]:
+                L.append(f"| {i['etiqueta']} | {i['valor_cabecera']} | {i['valor_respaldo']} | "
+                         f"{i['donde']} |")
+            L.append("")
 
     L += ["## Resultado caso a caso", "", "| # | Caso | Resultado | Observación |",
           "|---|---|---|---|"]
