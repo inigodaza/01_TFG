@@ -16,6 +16,10 @@ import subprocess
 from datetime import date
 from pathlib import Path
 
+# Se incrementa cuando cambia el contrato con app.py, para que la interfaz pueda
+# avisar si los dos ficheros no se han actualizado a la vez.
+VERSION = 3
+
 # ===========================================================================
 # 1. Lectura de PDF
 # ===========================================================================
