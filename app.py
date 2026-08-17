@@ -34,6 +34,16 @@ st.title("Bloque de Evaluación y Calidad")
 st.caption("Evaluación de la salida del módulo de auditoría de pedidos · "
            "Juan Salas · GraphyCems")
 
+VERSION_REQUERIDA = 4
+if getattr(E, "VERSION", 0) < VERSION_REQUERIDA:
+    st.error(
+        f"`evaluador.py` está desactualizado (versión {getattr(E, 'VERSION', 'anterior a la 3')}; "
+        f"se necesita la {VERSION_REQUERIDA}). `app.py` y `evaluador.py` van acoplados: "
+        f"sube los dos ficheros a la vez y, si el error persiste, reinicia la app desde "
+        f"**Manage app → Reboot app**."
+    )
+    st.stop()
+
 if not E.hay_pdftotext():
     st.error("No se encuentra `pdftotext`. En Streamlit Cloud, añade un fichero "
              "`packages.txt` con la línea `poppler-utils` y vuelve a desplegar.")
@@ -199,6 +209,21 @@ elif respuesta.strip():
 else:
     st.info("Sin respuesta introducida. Si continúas, se evaluará como ausencia de incidencias.")
 
+st.markdown("**Segunda ejecución (opcional)**")
+st.caption("Vuelve a auditar el mismo pedido en GraphyCems sin cambiar nada y pega aquí "
+           "la nueva respuesta. Sirve para comprobar si el veredicto es estable: la "
+           "redacción puede variar, el veredicto no debería.")
+respuesta_2 = st.text_area("Respuesta de la segunda ejecución", height=120,
+                           key="respuesta_2", label_visibility="collapsed")
+repeticion = None
+if respuesta_2.strip():
+    repeticion, avisos_2 = E.interpretar(respuesta_2)
+    for x in avisos_2:
+        st.warning(f"Segunda ejecución: {x}")
+    st.caption(f"Segunda ejecución interpretada: {len(repeticion)} incidencia(s) — "
+               + (", ".join(E.ETIQUETAS.get(i["campo"], i["campo"]) for i in repeticion)
+                  or "ninguna"))
+
 with st.expander("Cómo se interpreta la respuesta"):
     st.markdown(
         "La lectura es determinista: reconoce los encabezados de severidad "
@@ -221,7 +246,8 @@ if not st.button("Evaluar la salida del módulo", type="primary"):
     st.stop()
 
 pedido = Path(orden_doc["nombre"]).stem
-ev = E.evaluar(campos_orden, campos_cliente, incidencias)
+ev = E.evaluar(campos_orden, campos_cliente, incidencias,
+               texto_respuesta=respuesta, repeticion=repeticion)
 er = E.evaluation_result(ev, pedido)
 c = ev["contraste"]
 
@@ -274,14 +300,21 @@ if ev["mal_citados"]:
                + "; ".join(f"{v['etiqueta']} cita {v['citado']} y los documentos dicen {v['real']}"
                            for v in ev["mal_citados"]))
 
-if ev["incoherencias_internas"]:
-    st.markdown("**Incoherencias internas de la orden de fabricación**")
-    st.table(pd.DataFrame([{
-        "Campo": i["etiqueta"], "Valor en cabecera": i["valor_cabecera"],
-        "Valor de respaldo": i["valor_respaldo"], "Procedencia del respaldo": i["donde"],
-    } for i in ev["incoherencias_internas"]]))
-    st.caption("El cálculo productivo del propio documento contradice su cabecera: "
-               "la orden contenía la prueba de cuál era el valor correcto.")
+if ev.get("hallazgos"):
+    st.subheader("Hallazgos de cobertura")
+    st.caption("Comprobaciones que el módulo no realiza y que el evaluador sí. "
+               "No puntúan en la batería: no realizar una comprobación no equivale "
+               "a realizarla mal.")
+    for h in ev["hallazgos"]:
+        with st.expander(h["titulo"], expanded=True):
+            st.write(h["detalle"])
+            st.markdown(f"**Por qué importa:** {h['porque_importa']}")
+            if ev["incoherencias_internas"]:
+                st.table(pd.DataFrame([{
+                    "Campo": i["etiqueta"], "Valor en cabecera": i["valor_cabecera"],
+                    "Valor de respaldo": i["valor_respaldo"],
+                    "Procedencia del respaldo": i["donde"],
+                } for i in ev["incoherencias_internas"]]))
 
 # --- Resultado caso a caso --------------------------------------------------
 st.subheader("Resultado caso a caso")
